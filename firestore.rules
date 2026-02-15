@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: get the role of the currently authenticated user
+    function userRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // --- users/{uid} ---
+    // Boss: read all users. Driver: read ONLY own doc. No client writes.
+    match /users/{uid} {
+      allow read: if isAuth() && (userRole() == "boss" || request.auth.uid == uid);
+      allow write: if false; // managed via Firebase Console or Admin SDK
+    }
+
+    // --- trucks/{truckId} ---
+    // Boss: full read/write. Driver: read own truck, update only location/status/updatedAt.
+    match /trucks/{truckId} {
+      allow read: if isAuth() && (
+        userRole() == "boss"
+        || resource.data.driverId == request.auth.uid
+      );
+      allow create, delete: if isAuth() && userRole() == "boss";
+      allow update: if isAuth() && (
+        userRole() == "boss"
+        || (
+          resource.data.driverId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['location', 'status', 'updatedAt'])
+        )
+      );
+    }
+
+    // --- deliveries/{deliveryId} ---
+    // Boss: full read/write. Driver: read own deliveries, update only status/updatedAt.
+    match /deliveries/{deliveryId} {
+      allow read: if isAuth() && (
+        userRole() == "boss"
+        || resource.data.driverId == request.auth.uid
+      );
+      allow create, delete: if isAuth() && userRole() == "boss";
+      allow update: if isAuth() && (
+        userRole() == "boss"
+        || (
+          resource.data.driverId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'updatedAt'])
+        )
+      );
+    }
+
+    // --- tracking/{token} ---
+    // No client reads or writes. Accessed only via Admin SDK in API routes.
+    match /tracking/{token} {
+      allow read, write: if false;
+    }
+  }
+}
