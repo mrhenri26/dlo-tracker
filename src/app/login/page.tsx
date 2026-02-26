@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, useEffect } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { useRouter } from "next/navigation";
-import { auth, db } from "@/lib/firebase";
+import { auth, getClientDb } from "@/lib/firebase";
+import { useAuth } from "@/lib/auth-context";
 import { AppUser } from "@/types";
 
 export default function LoginPage() {
@@ -12,16 +13,30 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pendingRedirect, setPendingRedirect] = useState<"/boss" | "/driver" | null>(null);
   const router = useRouter();
+  const { firebaseUser } = useAuth();
+
+  // Navigate once auth state has the signed-in user (firebaseUser). We already validated
+  // the user doc on this page; auth context will load appUser after we land.
+  useEffect(() => {
+    if (typeof console !== "undefined" && console.warn && pendingRedirect) {
+      console.warn("[DloAuth] login redirect effect", { pendingRedirect, hasFirebaseUser: !!firebaseUser?.uid });
+    }
+    if (!pendingRedirect || !firebaseUser?.uid) return;
+    setPendingRedirect(null);
+    router.push(pendingRedirect);
+  }, [pendingRedirect, firebaseUser?.uid, router]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
     setLoading(true);
+    setPendingRedirect(null);
 
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
-      const userDoc = await getDoc(doc(db, "users", cred.user.uid));
+      const userDoc = await getDoc(doc(getClientDb(), "users", cred.user.uid));
 
       if (!userDoc.exists()) {
         setError("Account not found. Contact your administrator.");
@@ -31,10 +46,23 @@ export default function LoginPage() {
 
       const userData = userDoc.data() as AppUser;
 
+      // #region agent log
+      const path = userData.role === "boss" ? "/boss" : userData.role === "driver" ? "/driver" : "";
+      fetch("http://127.0.0.1:7242/ingest/90433ca3-f8b2-48ed-ba4c-cb0cc7fb2fa2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "login/page.tsx:before-push",
+          message: "Login success, waiting for auth context",
+          data: { role: userData.role, path, hypothesisId: "H5" },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
       if (userData.role === "boss") {
-        router.push("/boss");
+        setPendingRedirect("/boss");
       } else if (userData.role === "driver") {
-        router.push("/driver");
+        setPendingRedirect("/driver");
       }
     } catch (err: unknown) {
       const message =

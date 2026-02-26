@@ -8,7 +8,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { v4 as uuidv4 } from "uuid";
-import { db } from "@/lib/firebase";
+import { getClientDb } from "@/lib/firebase";
 import { Truck } from "@/types";
 
 interface DeliveryFormProps {
@@ -37,11 +37,12 @@ export default function DeliveryForm({ trucks, onClose }: DeliveryFormProps) {
       }
 
       const trackingToken = uuidv4();
-      const deliveryRef = doc(collection(db, "deliveries"));
-      const trackingRef = doc(db, "tracking", trackingToken);
+      const firestore = getClientDb();
+      const deliveryRef = doc(collection(firestore, "deliveries"));
+      const trackingRef = doc(firestore, "tracking", trackingToken);
 
       // Batched write: create both delivery and tracking docs atomically
-      const batch = writeBatch(db);
+      const batch = writeBatch(firestore);
 
       batch.set(deliveryRef, {
         truckId: truck.id,

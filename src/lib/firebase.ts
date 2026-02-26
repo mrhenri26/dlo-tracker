@@ -35,7 +35,23 @@ export function getClientAuth(): Auth {
 }
 
 export function getClientDb(): Firestore {
-  if (_db) return _db;
+  if (_db) {
+    // #region agent log
+    if (typeof fetch !== "undefined") {
+      fetch("http://127.0.0.1:7242/ingest/90433ca3-f8b2-48ed-ba4c-cb0cc7fb2fa2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          location: "firebase.ts:getClientDb-cached",
+          message: "getClientDb returned cached",
+          data: { constructorName: _db?.constructor?.name, hypothesisId: "H2" },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+    }
+    // #endregion
+    return _db;
+  }
   try {
     _db = initializeFirestore(getApp(), {
       localCache: persistentLocalCache({
@@ -45,6 +61,20 @@ export function getClientDb(): Firestore {
   } catch {
     _db = getFirestore(getApp());
   }
+  // #region agent log
+  if (typeof fetch !== "undefined") {
+    fetch("http://127.0.0.1:7242/ingest/90433ca3-f8b2-48ed-ba4c-cb0cc7fb2fa2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "firebase.ts:getClientDb-init",
+        message: "getClientDb initialized",
+        data: { constructorName: _db?.constructor?.name, hypothesisId: "H2" },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+  }
+  // #endregion
   return _db;
 }
 

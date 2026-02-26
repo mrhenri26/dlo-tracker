@@ -9,7 +9,7 @@ import {
   where,
   orderBy,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { getClientDb } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Truck, Delivery } from "@/types";
 import dynamic from "next/dynamic";
@@ -27,14 +27,30 @@ export default function BossDashboard() {
 
   // Auth guard
   useEffect(() => {
-    if (!loading && (!appUser || appUser.role !== "boss")) {
+    const redirecting = !loading && (!appUser || appUser.role !== "boss");
+    // #region agent log
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("[DloAuth] boss guard", { loading, hasAppUser: !!appUser, role: appUser?.role, redirecting });
+    }
+    fetch("http://127.0.0.1:7242/ingest/90433ca3-f8b2-48ed-ba4c-cb0cc7fb2fa2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "boss/page.tsx:guard",
+        message: "Guard run",
+        data: { loading, appUserRole: appUser?.role ?? null, hasAppUser: !!appUser, redirecting, hypothesisId: "H1,H3,H5" },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+    if (redirecting) {
       router.replace("/login");
     }
   }, [appUser, loading, router]);
 
   // Real-time listener for trucks
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "trucks"), (snap) => {
+    const unsub = onSnapshot(collection(getClientDb(), "trucks"), (snap) => {
       const data = snap.docs.map(
         (d) => ({ id: d.id, ...d.data() }) as Truck
       );
@@ -46,7 +62,7 @@ export default function BossDashboard() {
   // Real-time listener for active deliveries
   useEffect(() => {
     const q = query(
-      collection(db, "deliveries"),
+      collection(getClientDb(), "deliveries"),
       where("status", "in", ["pending", "en_route"]),
       orderBy("createdAt", "desc")
     );

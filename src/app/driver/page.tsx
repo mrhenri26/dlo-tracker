@@ -11,7 +11,7 @@ import {
   updateDoc,
   serverTimestamp,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { getClientDb } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Truck, Delivery } from "@/types";
 import { startTracking, stopTracking, isTracking } from "@/lib/gps";
@@ -29,7 +29,23 @@ export default function DriverPage() {
 
   // Auth guard
   useEffect(() => {
-    if (!loading && (!appUser || appUser.role !== "driver")) {
+    const redirecting = !loading && (!appUser || appUser.role !== "driver");
+    // #region agent log
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("[DloAuth] driver guard", { loading, hasAppUser: !!appUser, role: appUser?.role, redirecting });
+    }
+    fetch("http://127.0.0.1:7242/ingest/90433ca3-f8b2-48ed-ba4c-cb0cc7fb2fa2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        location: "driver/page.tsx:guard",
+        message: "Guard run",
+        data: { loading, appUserRole: appUser?.role ?? null, hasAppUser: !!appUser, redirecting, hypothesisId: "H1,H3,H5" },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+    if (redirecting) {
       router.replace("/login");
     }
   }, [appUser, loading, router]);
@@ -49,7 +65,7 @@ export default function DriverPage() {
   // Listen for the driver's assigned truck
   useEffect(() => {
     if (!appUser?.truckId) return;
-    const unsub = onSnapshot(doc(db, "trucks", appUser.truckId), (snap) => {
+    const unsub = onSnapshot(doc(getClientDb(), "trucks", appUser.truckId), (snap) => {
       if (snap.exists()) {
         setTruck({ id: snap.id, ...snap.data() } as Truck);
       }
@@ -61,7 +77,7 @@ export default function DriverPage() {
   useEffect(() => {
     if (!appUser?.uid) return;
     const q = query(
-      collection(db, "deliveries"),
+      collection(getClientDb(), "deliveries"),
       where("driverId", "==", appUser.uid),
       where("status", "in", ["pending", "en_route"])
     );
@@ -82,11 +98,11 @@ export default function DriverPage() {
 
     try {
       // Update truck and delivery status
-      await updateDoc(doc(db, "trucks", truck.id), {
+      await updateDoc(doc(getClientDb(), "trucks", truck.id), {
         status: "on_delivery",
         updatedAt: serverTimestamp(),
       });
-      await updateDoc(doc(db, "deliveries", delivery.id), {
+      await updateDoc(doc(getClientDb(), "deliveries", delivery.id), {
         status: "en_route",
         updatedAt: serverTimestamp(),
       });
@@ -113,11 +129,11 @@ export default function DriverPage() {
     setTracking(false);
 
     try {
-      await updateDoc(doc(db, "trucks", truck.id), {
+      await updateDoc(doc(getClientDb(), "trucks", truck.id), {
         status: "idle",
         updatedAt: serverTimestamp(),
       });
-      await updateDoc(doc(db, "deliveries", delivery.id), {
+      await updateDoc(doc(getClientDb(), "deliveries", delivery.id), {
         status: "delivered",
         updatedAt: serverTimestamp(),
       });

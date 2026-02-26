@@ -1,5 +1,5 @@
 import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "./firebase";
+import { getClientDb } from "./firebase";
 
 let watchId: number | null = null;
 let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -31,7 +31,7 @@ export function startTracking(truckId: string): void {
   );
 
   // Write to Firestore every 10 seconds (not on every GPS event)
-  const truckRef = doc(db, "trucks", truckId);
+  const truckRef = doc(getClientDb(), "trucks", truckId);
   intervalId = setInterval(async () => {
     if (!lastPosition) return;
 
