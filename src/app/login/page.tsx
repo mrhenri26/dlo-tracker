@@ -6,70 +6,89 @@ import { doc, getDoc } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import { auth, getClientDb } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
-import { AppUser } from "@/types";
+import type { AppUser } from "@/types";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [pendingRedirect, setPendingRedirect] = useState<"/boss" | "/driver" | null>(null);
+  const [signedInWaitingForContext, setSignedInWaitingForContext] = useState(false);
+  const [pendingRole, setPendingRole] = useState<"boss" | "driver" | null>(null);
   const router = useRouter();
-  const { firebaseUser } = useAuth();
+  const { firebaseUser, appUser, loading: authLoading } = useAuth();
 
-  // Navigate once auth state has the signed-in user (firebaseUser). We already validated
-  // the user doc on this page; auth context will load appUser after we land.
+  // After signIn we wait for auth context to have firebaseUser (so the dashboard guard doesn't redirect back).
+  // Redirect when we have firebaseUser and (appUser or pendingRole from our getDoc).
   useEffect(() => {
-    if (typeof console !== "undefined" && console.warn && pendingRedirect) {
-      console.warn("[DloAuth] login redirect effect", { pendingRedirect, hasFirebaseUser: !!firebaseUser?.uid });
+    if (!signedInWaitingForContext) return;
+    const role = appUser?.role ?? pendingRole;
+    if (firebaseUser && role) {
+      setSignedInWaitingForContext(false);
+      setPendingRole(null);
+      setLoading(false);
+      router.push(role === "boss" ? "/boss" : "/driver");
+      return;
     }
-    if (!pendingRedirect || !firebaseUser?.uid) return;
-    setPendingRedirect(null);
-    router.push(pendingRedirect);
-  }, [pendingRedirect, firebaseUser?.uid, router]);
+    // Context finished loading but no user doc (account not found)
+    if (!authLoading && firebaseUser && !appUser && !pendingRole) {
+      setError("Account not found. Contact your administrator.");
+      setSignedInWaitingForContext(false);
+      setLoading(false);
+    }
+  }, [signedInWaitingForContext, firebaseUser, appUser, pendingRole, authLoading, router]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
     setLoading(true);
-    setPendingRedirect(null);
+    setSignedInWaitingForContext(false);
+    setPendingRole(null);
 
     try {
-      const cred = await signInWithEmailAndPassword(auth, email, password);
-      const userDoc = await getDoc(doc(getClientDb(), "users", cred.user.uid));
-
-      if (!userDoc.exists()) {
+      const { user } = await signInWithEmailAndPassword(auth, email, password);
+      // Auth context's onAuthStateChanged may fire late; retry getDoc so we can redirect when
+      // Firestore sees the new auth (avoids stuck "Signing in..." when callback never runs).
+      const uid = user.uid;
+      const maxAttempts = 5;
+      const delayMs = 400;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, delayMs));
+        try {
+          const userDoc = await getDoc(doc(getClientDb(), "users", uid));
+          if (userDoc.exists()) {
+            const data = userDoc.data() as AppUser;
+            const role = (data?.role === "boss" || data?.role === "driver") ? data.role : "boss";
+            setPendingRole(role);
+            setSignedInWaitingForContext(true);
+            return;
+          }
+        } catch {
+          // permission-denied or network; retry
+        }
+      }
+      // One more try after retries: if doc missing, show error; if still denied, wait for context.
+      try {
+        const userDoc = await getDoc(doc(getClientDb(), "users", uid));
+        if (userDoc.exists()) {
+          const data = userDoc.data() as AppUser;
+          const role = (data?.role === "boss" || data?.role === "driver") ? data.role : "boss";
+          setPendingRole(role);
+          setSignedInWaitingForContext(true);
+          return;
+        }
         setError("Account not found. Contact your administrator.");
-        setLoading(false);
-        return;
+      } catch {
+        setSignedInWaitingForContext(true);
       }
-
-      const userData = userDoc.data() as AppUser;
-
-      // #region agent log
-      const path = userData.role === "boss" ? "/boss" : userData.role === "driver" ? "/driver" : "";
-      fetch("http://127.0.0.1:7242/ingest/90433ca3-f8b2-48ed-ba4c-cb0cc7fb2fa2", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          location: "login/page.tsx:before-push",
-          message: "Login success, waiting for auth context",
-          data: { role: userData.role, path, hypothesisId: "H5" },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-      if (userData.role === "boss") {
-        setPendingRedirect("/boss");
-      } else if (userData.role === "driver") {
-        setPendingRedirect("/driver");
-      }
+      setLoading(false);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Login failed. Try again.";
-      if (message.includes("wrong-password") || message.includes("not-found")) {
+      const code = err && typeof err === "object" && "code" in err ? String((err as { code?: string }).code) : "";
+      if (message.includes("wrong-password") || message.includes("not-found") || code.includes("invalid-credential") || code.includes("user-not-found")) {
         setError("Invalid email or password.");
-      } else if (message.includes("too-many-requests")) {
+      } else if (message.includes("too-many-requests") || code.includes("too-many-requests")) {
         setError("Too many attempts. Please wait and try again.");
       } else {
         setError("Login failed. Check your credentials.");

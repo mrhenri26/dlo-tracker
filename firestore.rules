@@ -2,9 +2,10 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper: get the role of the currently authenticated user
+    // Helper: get the role of the currently authenticated user (null if doc missing)
     function userRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return userDoc != null && userDoc.data != null ? userDoc.data.get('role', null) : null;
     }
 
     function isAuth() {
@@ -13,8 +14,9 @@ service cloud.firestore {
 
     // --- users/{uid} ---
     // Boss: read all users. Driver: read ONLY own doc. No client writes.
+    // Own-doc read first so login works even when user doc doesn't exist yet.
     match /users/{uid} {
-      allow read: if isAuth() && (userRole() == "boss" || request.auth.uid == uid);
+      allow read: if isAuth() && (request.auth.uid == uid || userRole() == "boss");
       allow write: if false; // managed via Firebase Console or Admin SDK
     }
 

@@ -36,8 +36,13 @@ export interface Delivery {
   driverId: string;
   customerName: string;
   deliveryAddress: string;
+  location?: {
+    lat: number;
+    lng: number;
+  };
   status: DeliveryStatus;
   trackingToken: string;
+  scheduledAt?: Timestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -57,4 +62,8 @@ export interface TrackingResponse {
     lng: number;
     updatedAt: string;
   } | null;
+  deliveryLocation?: {
+    lat: number;
+    lng: number;
+  };
 }

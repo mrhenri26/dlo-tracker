@@ -17,38 +17,26 @@ import { Truck, Delivery } from "@/types";
 import { startTracking, stopTracking, isTracking } from "@/lib/gps";
 
 export default function DriverPage() {
-  const { appUser, loading, logout } = useAuth();
+  const { appUser, loading, logout, firebaseUser } = useAuth();
   const router = useRouter();
   const [truck, setTruck] = useState<Truck | null>(null);
-  const [delivery, setDelivery] = useState<Delivery | null>(null);
+  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [tracking, setTracking] = useState(false);
   const [online, setOnline] = useState(() =>
     typeof navigator !== "undefined" ? navigator.onLine : true
   );
   const [gpsError, setGpsError] = useState("");
 
+  const resolving = !!firebaseUser && !appUser;
+  const effectiveLoading = loading || resolving;
+
   // Auth guard
   useEffect(() => {
-    const redirecting = !loading && (!appUser || appUser.role !== "driver");
-    // #region agent log
-    if (typeof console !== "undefined" && console.warn) {
-      console.warn("[DloAuth] driver guard", { loading, hasAppUser: !!appUser, role: appUser?.role, redirecting });
-    }
-    fetch("http://127.0.0.1:7242/ingest/90433ca3-f8b2-48ed-ba4c-cb0cc7fb2fa2", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        location: "driver/page.tsx:guard",
-        message: "Guard run",
-        data: { loading, appUserRole: appUser?.role ?? null, hasAppUser: !!appUser, redirecting, hypothesisId: "H1,H3,H5" },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
+    const redirecting = !effectiveLoading && (!appUser || appUser.role !== "driver");
     if (redirecting) {
       router.replace("/login");
     }
-  }, [appUser, loading, router]);
+  }, [appUser, loading, effectiveLoading, router]);
 
   // Listen for network status
   useEffect(() => {
@@ -73,7 +61,7 @@ export default function DriverPage() {
     return () => unsub();
   }, [appUser?.truckId]);
 
-  // Listen for current active delivery for this driver
+  // Listen for all active deliveries for this driver
   useEffect(() => {
     if (!appUser?.uid) return;
     const q = query(
@@ -82,27 +70,43 @@ export default function DriverPage() {
       where("status", "in", ["pending", "en_route"])
     );
     const unsub = onSnapshot(q, (snap) => {
-      if (!snap.empty) {
-        const d = snap.docs[0];
-        setDelivery({ id: d.id, ...d.data() } as Delivery);
-      } else {
-        setDelivery(null);
-      }
+      const data = snap.docs.map(
+        (d) => ({ id: d.id, ...d.data() }) as Delivery
+      );
+      setDeliveries(data);
     });
     return () => unsub();
   }, [appUser?.uid]);
 
+  // Current = only the delivery you're actively doing (en_route). Future = all pending, sorted by time.
+  const currentDelivery = deliveries.find((d) => d.status === "en_route") ?? null;
+  const futureDeliveries = [...deliveries]
+    .filter((d) => d.status === "pending")
+    .sort((a, b) => {
+      const aTime = a.scheduledAt?.toDate?.()?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const bTime = b.scheduledAt?.toDate?.()?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      return aTime - bTime;
+    });
+  const deliveryToStart = futureDeliveries[0] ?? null;
+
+  function formatScheduledAt(d: Delivery): string {
+    const date = d.scheduledAt?.toDate?.();
+    return date
+      ? date.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })
+      : "No time set";
+  }
+
   const handleStartTracking = useCallback(async () => {
-    if (!truck || !delivery) return;
+    const target = deliveryToStart ?? currentDelivery;
+    if (!truck || !target) return;
     setGpsError("");
 
     try {
-      // Update truck and delivery status
       await updateDoc(doc(getClientDb(), "trucks", truck.id), {
         status: "on_delivery",
         updatedAt: serverTimestamp(),
       });
-      await updateDoc(doc(getClientDb(), "deliveries", delivery.id), {
+      await updateDoc(doc(getClientDb(), "deliveries", target.id), {
         status: "en_route",
         updatedAt: serverTimestamp(),
       });
@@ -115,7 +119,7 @@ export default function DriverPage() {
         err instanceof Error ? err.message : "Failed to start GPS tracking"
       );
     }
-  }, [truck, delivery]);
+  }, [truck, deliveryToStart, currentDelivery]);
 
   const handleStopTracking = useCallback(() => {
     stopTracking();
@@ -123,7 +127,7 @@ export default function DriverPage() {
   }, []);
 
   const handleMarkDelivered = useCallback(async () => {
-    if (!truck || !delivery) return;
+    if (!truck || !currentDelivery) return;
 
     stopTracking();
     setTracking(false);
@@ -133,14 +137,14 @@ export default function DriverPage() {
         status: "idle",
         updatedAt: serverTimestamp(),
       });
-      await updateDoc(doc(getClientDb(), "deliveries", delivery.id), {
+      await updateDoc(doc(getClientDb(), "deliveries", currentDelivery.id), {
         status: "delivered",
         updatedAt: serverTimestamp(),
       });
     } catch (err) {
       console.error("Failed to mark delivered:", err);
     }
-  }, [truck, delivery]);
+  }, [truck, currentDelivery]);
 
   // Cleanup tracking on unmount
   useEffect(() => {
@@ -151,7 +155,7 @@ export default function DriverPage() {
     };
   }, []);
 
-  if (loading) {
+  if (effectiveLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="animate-pulse text-gray-500">Loading...</div>
@@ -202,27 +206,32 @@ export default function DriverPage() {
           </div>
         )}
 
-        {/* Delivery info card */}
-        {delivery ? (
+        {/* Current delivery — one window */}
+        {currentDelivery ? (
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-sm border p-5">
-            <h2 className="text-sm font-medium text-gray-500 mb-1">
-              Current Delivery
+            <h2 className="text-sm font-medium text-gray-500 mb-0.5">
+              Current delivery
             </h2>
+            <p className="text-xs text-gray-400 mb-2">The one you’re doing right now</p>
             <p className="text-lg font-semibold text-gray-900">
-              {delivery.customerName}
+              {currentDelivery.customerName}
             </p>
-            <p className="text-gray-600 mt-1">{delivery.deliveryAddress}</p>
+            <p className="text-gray-600 mt-1">{currentDelivery.deliveryAddress}</p>
+            <p className="text-xs text-gray-500 mt-1">
+              {formatScheduledAt(currentDelivery)}
+            </p>
             <div className="mt-3">
-              <span
-                className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
-                  delivery.status === "en_route"
-                    ? "bg-blue-100 text-blue-700"
-                    : "bg-yellow-100 text-yellow-700"
-                }`}
-              >
-                {delivery.status === "en_route" ? "En Route" : "Pending"}
+              <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                En route
               </span>
             </div>
+          </div>
+        ) : futureDeliveries.length > 0 ? (
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-sm border p-8 text-center">
+            <p className="text-gray-400">No current delivery.</p>
+            <p className="text-sm text-gray-300 mt-1">
+              Start one from the list below when you're ready.
+            </p>
           </div>
         ) : (
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-sm border p-8 text-center">
@@ -230,6 +239,30 @@ export default function DriverPage() {
             <p className="text-sm text-gray-300 mt-1">
               Wait for the boss to assign one.
             </p>
+          </div>
+        )}
+
+        {/* Future deliveries */}
+        {futureDeliveries.length > 0 && (
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-sm border p-5">
+            <h2 className="text-sm font-medium text-gray-500 mb-0.5">
+              Future deliveries
+            </h2>
+            <p className="text-xs text-gray-400 mb-3">Later today</p>
+            <ul className="space-y-3">
+              {futureDeliveries.map((d) => (
+                <li
+                  key={d.id}
+                  className="border-b border-gray-100 pb-3 last:border-0 last:pb-0"
+                >
+                  <p className="font-medium text-gray-900">{d.customerName}</p>
+                  <p className="text-sm text-gray-600">{d.deliveryAddress}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {formatScheduledAt(d)}
+                  </p>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
@@ -248,7 +281,7 @@ export default function DriverPage() {
           {!tracking ? (
             <button
               onClick={handleStartTracking}
-              disabled={!delivery || delivery.status === "delivered"}
+              disabled={!deliveryToStart}
               className="w-full py-5 bg-blue-600 text-white text-xl font-bold rounded-2xl hover:bg-blue-700 active:bg-blue-800 transition disabled:opacity-30 disabled:cursor-not-allowed shadow-lg"
             >
               Start Tracking

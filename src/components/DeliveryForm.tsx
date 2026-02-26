@@ -1,14 +1,7 @@
 "use client";
 
-import { useState, FormEvent } from "react";
-import {
-  collection,
-  doc,
-  writeBatch,
-  serverTimestamp,
-} from "firebase/firestore";
-import { v4 as uuidv4 } from "uuid";
-import { getClientDb } from "@/lib/firebase";
+import { useState, FormEvent, useEffect, useRef } from "react";
+import { getClientAuth } from "@/lib/firebase";
 import { Truck } from "@/types";
 
 interface DeliveryFormProps {
@@ -20,8 +13,95 @@ export default function DeliveryForm({ trucks, onClose }: DeliveryFormProps) {
   const [truckId, setTruckId] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
+  const [deliveryLocation, setDeliveryLocation] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [scheduledAt, setScheduledAt] = useState(() => {
+    const d = new Date();
+    const pad = (n: number) => n.toString().padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [placesEnabled, setPlacesEnabled] = useState(false);
+
+  const addressInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let autocomplete: google.maps.places.Autocomplete | null = null;
+
+    async function initPlaces() {
+      if (typeof window === "undefined") return;
+
+      const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+      if (!apiKey) {
+        return;
+      }
+
+      const setupAutocomplete = () => {
+        const input = addressInputRef.current;
+        const googleObj = (window as any).google;
+        if (!input || !googleObj?.maps?.places) return;
+
+        autocomplete = new googleObj.maps.places.Autocomplete(input, {
+          types: ["geocode"],
+        });
+
+        autocomplete.addListener("place_changed", () => {
+          const place = autocomplete!.getPlace();
+          const formatted =
+            place.formatted_address || place.name || deliveryAddress;
+          const loc = place.geometry?.location;
+
+          if (formatted) {
+            setDeliveryAddress(formatted);
+          }
+          if (loc) {
+            setDeliveryLocation({
+              lat: loc.lat(),
+              lng: loc.lng(),
+            });
+          }
+
+          setPlacesEnabled(true);
+        });
+
+        setPlacesEnabled(true);
+      };
+
+      const googleObj = (window as any).google;
+      if (googleObj?.maps?.places) {
+        setupAutocomplete();
+        return;
+      }
+
+      const existingScript = document.querySelector<
+        HTMLScriptElement
+      >('script[data-google-maps="true"]');
+
+      if (existingScript) {
+        existingScript.addEventListener("load", setupAutocomplete, {
+          once: true,
+        });
+        return;
+      }
+
+      const script = document.createElement("script");
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
+      script.async = true;
+      script.dataset.googleMaps = "true";
+      script.onload = setupAutocomplete;
+      document.head.appendChild(script);
+    }
+
+    initPlaces();
+
+    return () => {
+      // Leaflet/Places cleans up listeners automatically when the input unmounts.
+      autocomplete = null;
+    };
+  }, [deliveryAddress]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -36,32 +116,45 @@ export default function DeliveryForm({ trucks, onClose }: DeliveryFormProps) {
         return;
       }
 
-      const trackingToken = uuidv4();
-      const firestore = getClientDb();
-      const deliveryRef = doc(collection(firestore, "deliveries"));
-      const trackingRef = doc(firestore, "tracking", trackingToken);
+      const user = getClientAuth().currentUser;
+      if (!user) {
+        setError("You must be signed in to create a delivery.");
+        setSubmitting(false);
+        return;
+      }
 
-      // Batched write: create both delivery and tracking docs atomically
-      const batch = writeBatch(firestore);
-
-      batch.set(deliveryRef, {
-        truckId: truck.id,
-        driverId: truck.driverId,
-        customerName,
-        deliveryAddress,
-        status: "pending",
-        trackingToken,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      const idToken = await user.getIdToken();
+      const res = await fetch("/api/deliveries", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          truckId: truck.id,
+          driverId: truck.driverId,
+          customerName,
+          deliveryAddress,
+          location: deliveryLocation
+            ? { lat: deliveryLocation.lat, lng: deliveryLocation.lng }
+            : undefined,
+          scheduledAt: new Date(scheduledAt).toISOString(),
+        }),
       });
 
-      batch.set(trackingRef, {
-        deliveryId: deliveryRef.id,
-        truckId: truck.id,
-        createdAt: serverTimestamp(),
-      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const message =
+          data?.error === "Forbidden: boss role required"
+            ? "Only bosses can create deliveries."
+            : data?.error === "Token expired"
+              ? "Session expired. Please sign in again."
+              : data?.error || "Failed to create delivery. Try again.";
+        setError(message);
+        setSubmitting(false);
+        return;
+      }
 
-      await batch.commit();
       onClose();
     } catch (err) {
       console.error("Error creating delivery:", err);
@@ -131,9 +224,31 @@ export default function DeliveryForm({ trucks, onClose }: DeliveryFormProps) {
               type="text"
               required
               value={deliveryAddress}
-              onChange={(e) => setDeliveryAddress(e.target.value)}
+              onChange={(e) => {
+                setDeliveryAddress(e.target.value);
+                setDeliveryLocation(null);
+              }}
+              ref={addressInputRef}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-gray-900"
               placeholder="e.g. Rue Capois, Pétion-Ville"
+            />
+            {placesEnabled && (
+              <p className="mt-1 text-xs text-gray-500">
+                Start typing and choose a suggestion to verify the address and
+                capture map coordinates.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Scheduled date & time
+            </label>
+            <input
+              type="datetime-local"
+              value={scheduledAt}
+              onChange={(e) => setScheduledAt(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-gray-900"
             />
           </div>
 

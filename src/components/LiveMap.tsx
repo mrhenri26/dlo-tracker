@@ -28,6 +28,8 @@ interface MapMarker {
   label: string;
   status: string;
   updatedAt?: string;
+  type?: "truck" | "delivery";
+  address?: string;
 }
 
 interface LiveMapProps {
@@ -53,6 +55,7 @@ export default function LiveMap({
   const [leafletIcon, setLeafletIcon] = useState<{
     idle: L.Icon;
     on_delivery: L.Icon;
+    delivery: L.Icon;
   } | null>(null);
 
   useEffect(() => {
@@ -79,7 +82,17 @@ export default function LiveMap({
         popupAnchor: [1, -34],
         shadowSize: [41, 41],
       });
-      setLeafletIcon({ idle, on_delivery });
+      const delivery = new L.Icon({
+        iconUrl:
+          "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
+        shadowUrl:
+          "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+        popupAnchor: [1, -34],
+        shadowSize: [41, 41],
+      });
+      setLeafletIcon({ idle, on_delivery, delivery });
     });
   }, []);
 
@@ -110,9 +123,11 @@ export default function LiveMap({
           position={[m.lat, m.lng]}
           icon={
             leafletIcon
-              ? m.status === "on_delivery"
-                ? leafletIcon.on_delivery
-                : leafletIcon.idle
+              ? m.type === "delivery"
+                ? leafletIcon.delivery
+                : m.status === "on_delivery"
+                  ? leafletIcon.on_delivery
+                  : leafletIcon.idle
               : undefined
           }
         >
@@ -120,11 +135,22 @@ export default function LiveMap({
             <div className="text-sm">
               <p className="font-semibold">{m.label}</p>
               <p className="text-gray-500">
-                {m.status === "on_delivery" ? "En route" : "Idle"}
+                {m.type === "delivery"
+                  ? m.status === "delivered"
+                    ? "Delivery destination (delivered)"
+                    : "Delivery destination"
+                  : m.status === "on_delivery"
+                    ? "En route"
+                    : "Idle"}
               </p>
-              <p className="text-xs text-gray-400">
-                Updated: {formatTime(m.updatedAt)}
-              </p>
+              {m.type === "delivery" && m.address && (
+                <p className="text-xs text-gray-400 mt-1">{m.address}</p>
+              )}
+              {m.type !== "delivery" && (
+                <p className="text-xs text-gray-400">
+                  Updated: {formatTime(m.updatedAt)}
+                </p>
+              )}
             </div>
           </Popup>
         </Marker>
