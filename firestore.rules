@@ -13,8 +13,11 @@ service cloud.firestore {
 
     // --- users/{uid} ---
     // Boss: read all users. Driver: read ONLY own doc. No client writes.
+    // Keep self-read in a separate rule to avoid recursive userRole() lookups
+    // when reading /users/{request.auth.uid}.
     match /users/{uid} {
-      allow read: if isAuth() && (userRole() == "boss" || request.auth.uid == uid);
+      allow read: if isAuth() && request.auth.uid == uid;
+      allow read: if isAuth() && request.auth.uid != uid && userRole() == "boss";
       allow write: if false; // managed via Firebase Console or Admin SDK
     }
 
