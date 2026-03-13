@@ -46,6 +46,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setFirebaseUser(user);
 
       if (user) {
+        // Cancel any pending null-state timeout so it can't set loading=false
+        // while we're still awaiting the Firestore user doc fetch.
+        if (nullTimeoutRef.current) {
+          clearTimeout(nullTimeoutRef.current);
+          nullTimeoutRef.current = null;
+        }
         try {
           const userDoc = await getDoc(doc(getClientDb(), "users", user.uid));
           if (userDoc.exists()) {
