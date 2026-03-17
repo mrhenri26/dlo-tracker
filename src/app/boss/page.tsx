@@ -14,7 +14,7 @@ import {
 } from "firebase/firestore";
 import { getClientDb } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
-import { Truck, Delivery, DeliveryStatus, TruckStatus } from "@/types";
+import { Truck, Delivery, DeliveryStatus, TruckStatus, AppUser } from "@/types";
 import dynamic from "next/dynamic";
 import DeliveryForm from "@/components/DeliveryForm";
 
@@ -24,6 +24,7 @@ export default function BossDashboard() {
   const { appUser, loading, logout, firebaseUser, providerId } = useAuth();
   const router = useRouter();
   const [trucks, setTrucks] = useState<Truck[]>([]);
+  const [drivers, setDrivers] = useState<AppUser[]>([]);
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
@@ -55,6 +56,22 @@ export default function BossDashboard() {
         (d) => ({ id: d.id, ...d.data() }) as Truck
       );
       setTrucks(data);
+    });
+    return () => unsub();
+  }, [appUser?.role]);
+
+  // Real-time listener for drivers (only when boss)
+  useEffect(() => {
+    if (appUser?.role !== "boss") return;
+    const q = query(
+      collection(getClientDb(), "users"),
+      where("role", "==", "driver")
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const data = snap.docs.map(
+        (d) => ({ uid: d.id, ...d.data() } as AppUser)
+      );
+      setDrivers(data);
     });
     return () => unsub();
   }, [appUser?.role]);
@@ -136,6 +153,26 @@ export default function BossDashboard() {
           status: overrideTarget.newStatus,
           updatedAt: serverTimestamp(),
         });
+        if (overrideTarget.newStatus === "en_route" && overrideTarget.delivery.truckId) {
+          const truckRef = doc(db, "trucks", overrideTarget.delivery.truckId);
+          await updateDoc(truckRef, {
+            status: "on_delivery",
+            updatedAt: serverTimestamp(),
+          });
+        }
+        if (overrideTarget.newStatus === "delivered" && overrideTarget.delivery.truckId) {
+          const truckId = overrideTarget.delivery.truckId;
+          const otherEnRoute = deliveries.some(
+            (d) => d.truckId === truckId && d.id !== overrideTarget.delivery.id && d.status === "en_route"
+          );
+          if (!otherEnRoute) {
+            const truckRef = doc(db, "trucks", truckId);
+            await updateDoc(truckRef, {
+              status: "idle",
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
       } else {
         const ref = doc(db, "trucks", overrideTarget.truck.id);
         await updateDoc(ref, {
@@ -240,6 +277,9 @@ export default function BossDashboard() {
                         Truck
                       </th>
                       <th className="text-left px-4 py-3 font-medium">
+                        Driver
+                      </th>
+                      <th className="text-left px-4 py-3 font-medium">
                         Status
                       </th>
                       <th className="text-left px-4 py-3 font-medium">
@@ -256,6 +296,7 @@ export default function BossDashboard() {
                   <tbody className="divide-y divide-gray-100">
                     {sortedDeliveries.map((d) => {
                       const truck = trucks.find((t) => t.id === d.truckId);
+                      const driver = drivers.find((dr) => dr.uid === d.driverId);
                       return (
                         <tr key={d.id} className="hover:bg-gray-50">
                           <td className="px-4 py-3 text-gray-900">
@@ -266,6 +307,9 @@ export default function BossDashboard() {
                           </td>
                           <td className="px-4 py-3 text-gray-600">
                             {truck?.name || "—"}
+                          </td>
+                          <td className="px-4 py-3 text-gray-600">
+                            {driver?.name || driver?.email || "—"}
                           </td>
                           <td className="px-4 py-3">
                             <span
@@ -300,35 +344,47 @@ export default function BossDashboard() {
                             </button>
                           </td>
                           <td className="px-4 py-3">
-                            <div className="flex flex-wrap gap-2">
-                              {(["pending", "en_route", "delivered"] as DeliveryStatus[]).map(
-                                (status) => (
-                                  <button
-                                    key={status}
-                                    type="button"
-                                    disabled={status === d.status}
-                                    onClick={() =>
-                                      setOverrideTarget({
-                                        type: "delivery",
-                                        delivery: d,
-                                        newStatus: status,
-                                      })
-                                    }
-                                    className={`px-2 py-1 rounded text-xs border ${
-                                      status === d.status
-                                        ? "bg-gray-100 text-gray-400 cursor-default"
-                                        : "bg-white text-gray-700 hover:bg-gray-50"
-                                    }`}
-                                  >
-                                    {status === "pending"
-                                      ? "Set Pending"
-                                      : status === "en_route"
-                                        ? "Set En Route"
-                                        : "Set Delivered"}
-                                  </button>
-                                )
-                              )}
-                            </div>
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                e.target.value = "";
+                                if (
+                                  v === "pending" ||
+                                  v === "en_route" ||
+                                  v === "delivered"
+                                ) {
+                                  setOverrideTarget({
+                                    type: "delivery",
+                                    delivery: d,
+                                    newStatus: v as DeliveryStatus,
+                                  });
+                                }
+                              }}
+                              className="text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white text-gray-700 hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                            >
+                              <option value="" disabled>
+                                Actions
+                              </option>
+                              <option
+                                value="pending"
+                                disabled={d.status === "pending"}
+                              >
+                                Set Pending
+                              </option>
+                              <option
+                                value="en_route"
+                                disabled={d.status === "en_route"}
+                              >
+                                Set En Route
+                              </option>
+                              <option
+                                value="delivered"
+                                disabled={d.status === "delivered"}
+                              >
+                                Set Delivered
+                              </option>
+                            </select>
                           </td>
                         </tr>
                       );
@@ -340,10 +396,10 @@ export default function BossDashboard() {
           )}
         </section>
 
-        {/* Truck status override */}
+        {/* Truck status */}
         <section>
           <h2 className="text-lg font-semibold text-gray-800 mb-3">
-            Truck Status Override
+            Truck Status
           </h2>
           {trucks.length === 0 ? (
             <div className="bg-white rounded-xl p-4 text-sm text-gray-400 border">
@@ -367,53 +423,69 @@ export default function BossDashboard() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {trucks.map((t) => (
-                      <tr key={t.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-gray-900">
-                          {t.name} ({t.plateNumber})
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
-                              t.status === "on_delivery"
-                                ? "bg-blue-100 text-blue-700"
-                                : "bg-green-100 text-green-700"
-                            }`}
-                          >
-                            {t.status === "on_delivery" ? "On Delivery" : "Idle"}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex gap-2">
-                            {(["idle", "on_delivery"] as TruckStatus[]).map(
-                              (status) => (
-                                <button
-                                  key={status}
-                                  type="button"
-                                  disabled={status === t.status}
-                                  onClick={() =>
-                                    setOverrideTarget({
-                                      type: "truck",
-                                      truck: t,
-                                      newStatus: status,
-                                    })
-                                  }
-                                  className={`px-2 py-1 rounded text-xs border ${
-                                    status === t.status
-                                      ? "bg-gray-100 text-gray-400 cursor-default"
-                                      : "bg-white text-gray-700 hover:bg-gray-50"
-                                  }`}
-                                >
-                                  {status === "idle"
-                                    ? "Set Idle"
-                                    : "Set On Delivery"}
-                                </button>
-                              )
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {trucks.map((t) => {
+                      const hasEnRouteDelivery = deliveries.some(
+                        (d) => d.truckId === t.id && d.status === "en_route"
+                      );
+                      return (
+                        <tr key={t.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3 text-gray-900">
+                            {t.name} ({t.plateNumber})
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
+                                t.status === "on_delivery"
+                                  ? "bg-blue-100 text-blue-700"
+                                  : "bg-green-100 text-green-700"
+                              }`}
+                            >
+                              {t.status === "on_delivery" ? "On Delivery" : "Idle"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex gap-2">
+                              {(["idle", "on_delivery"] as TruckStatus[]).map(
+                                (status) => {
+                                  const isIdleDisabled =
+                                    status === "idle" && hasEnRouteDelivery;
+                                  const disabled =
+                                    status === t.status || isIdleDisabled;
+                                  return (
+                                    <button
+                                      key={status}
+                                      type="button"
+                                      disabled={disabled}
+                                      title={
+                                        isIdleDisabled
+                                          ? "This truck has an en route delivery. Mark the delivery delivered first."
+                                          : undefined
+                                      }
+                                      onClick={() =>
+                                        setOverrideTarget({
+                                          type: "truck",
+                                          truck: t,
+                                          newStatus: status,
+                                        })
+                                      }
+                                      className={`px-2 py-1 rounded text-xs border ${
+                                        disabled
+                                          ? "bg-gray-100 text-gray-400 cursor-default"
+                                          : "bg-white text-gray-700 hover:bg-gray-50"
+                                      }`}
+                                    >
+                                      {status === "idle"
+                                        ? "Set Idle"
+                                        : "Set On Delivery"}
+                                    </button>
+                                  );
+                                }
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -426,6 +498,7 @@ export default function BossDashboard() {
       {showForm && (
         <DeliveryForm
           trucks={trucks}
+          drivers={drivers}
           onClose={() => setShowForm(false)}
         />
       )}

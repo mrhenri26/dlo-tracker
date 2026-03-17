@@ -8,6 +8,50 @@ import dynamic from "next/dynamic";
 const LiveMap = dynamic(() => import("@/components/LiveMap"), { ssr: false });
 
 const POLL_INTERVAL = 10000; // 10 seconds
+const ETA_SPEED_KMH = 28; // assumed urban delivery speed
+
+function haversineKm(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const R = 6371; // Earth radius in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function estimateEtaMinutes(
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number
+): number {
+  const km = haversineKm(fromLat, fromLng, toLat, toLng);
+  const hours = km / ETA_SPEED_KMH;
+  return Math.max(1, Math.round(hours * 60));
+}
+
+function formatUpdatedAgo(isoDate: string): string {
+  const d = new Date(isoDate);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "just now";
+  if (diffMins === 1) return "1 min ago";
+  if (diffMins < 60) return `${diffMins} min ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours === 1) return "1 hour ago";
+  return `${diffHours} hours ago`;
+}
 
 export default function CustomerTrackingPage({
   params,
@@ -50,24 +94,62 @@ export default function CustomerTrackingPage({
     return () => clearInterval(interval);
   }, [fetchTracking]);
 
-  // Map markers
-  const markers =
-    data?.location
-      ? [
-          {
-            id: "truck",
-            lat: data.location.lat,
-            lng: data.location.lng,
-            label: "Your delivery truck",
-            status: data.status === "delivered" ? "idle" : "on_delivery",
-            updatedAt: data.location.updatedAt || undefined,
-          },
-        ]
-      : [];
+  // Map markers: truck (vehicle icon) + optional destination
+  const markers: { id: string; lat: number; lng: number; label: string; status: string; updatedAt?: string; type?: "truck" | "delivery" | "vehicle"; address?: string }[] = [];
+  if (data?.location) {
+    markers.push({
+      id: "truck",
+      lat: data.location.lat,
+      lng: data.location.lng,
+      label: "Your delivery truck",
+      status: data.status === "delivered" ? "idle" : "on_delivery",
+      updatedAt: data.location.updatedAt || undefined,
+      type: "vehicle",
+    });
+  }
+  if (data?.deliveryLocation) {
+    markers.push({
+      id: "destination",
+      lat: data.deliveryLocation.lat,
+      lng: data.deliveryLocation.lng,
+      label: "Your delivery",
+      status: data.status,
+      type: "delivery",
+      address: data.deliveryAddress,
+    });
+  }
 
   const mapCenter: [number, number] = data?.location
     ? [data.location.lat, data.location.lng]
     : [18.54, -72.34];
+
+  const fitBoundsPoints: [number, number][] =
+    data?.location && data?.deliveryLocation
+      ? [
+          [data.location.lat, data.location.lng],
+          [data.deliveryLocation.lat, data.deliveryLocation.lng],
+        ]
+      : [];
+
+  const routeLine: [number, number][] =
+    data?.location && data?.deliveryLocation
+      ? [
+          [data.location.lat, data.location.lng],
+          [data.deliveryLocation.lat, data.deliveryLocation.lng],
+        ]
+      : [];
+
+  const etaMinutes =
+    data?.status === "en_route" &&
+    data?.location &&
+    data?.deliveryLocation
+      ? estimateEtaMinutes(
+          data.location.lat,
+          data.location.lng,
+          data.deliveryLocation.lat,
+          data.deliveryLocation.lng
+        )
+      : null;
 
   if (loading) {
     return (
@@ -142,6 +224,24 @@ export default function CustomerTrackingPage({
           </div>
         )}
 
+        {/* ETA (when en route and both locations available) */}
+        {etaMinutes != null && (
+          <div className="bg-white rounded-2xl shadow-sm border p-4">
+            <p className="text-sm font-medium text-gray-500">
+              Estimated arrival
+            </p>
+            <p className="text-xl font-bold text-gray-900 mt-0.5">
+              Arriving in about {etaMinutes} {etaMinutes === 1 ? "minute" : "minutes"}
+            </p>
+            {data?.location?.updatedAt && (
+              <p className="text-xs text-gray-400 mt-2">
+                Location updated{" "}
+                {formatUpdatedAgo(data.location.updatedAt)}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Map */}
         {data?.location ? (
           <div>
@@ -153,6 +253,8 @@ export default function CustomerTrackingPage({
               center={mapCenter}
               zoom={14}
               className="h-[350px] w-full rounded-xl shadow-sm border"
+              fitBoundsPoints={fitBoundsPoints.length >= 2 ? fitBoundsPoints : undefined}
+              routeLine={routeLine.length >= 2 ? routeLine : undefined}
             />
           </div>
         ) : (

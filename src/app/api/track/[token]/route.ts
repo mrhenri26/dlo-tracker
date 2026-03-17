@@ -41,6 +41,13 @@ export async function GET(
         }
       : null;
 
+    const deliveryLocation =
+      delivery.location &&
+      typeof delivery.location.lat === "number" &&
+      typeof delivery.location.lng === "number"
+        ? { lat: delivery.location.lat, lng: delivery.location.lng }
+        : undefined;
+
     // Step 3: Return combined response with no-store cache header
     return NextResponse.json(
       {
@@ -48,6 +55,7 @@ export async function GET(
         customerName: delivery.customerName,
         deliveryAddress: delivery.deliveryAddress,
         location,
+        ...(deliveryLocation && { deliveryLocation }),
       },
       {
         headers: { "Cache-Control": "no-store" },

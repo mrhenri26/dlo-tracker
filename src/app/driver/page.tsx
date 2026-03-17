@@ -15,6 +15,7 @@ import { getClientDb } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import { Truck, Delivery } from "@/types";
 import { startTracking, stopTracking, isTracking } from "@/lib/gps";
+import { openMapsWithDestination } from "@/lib/maps";
 
 export default function DriverPage() {
   const { appUser, loading, logout, firebaseUser } = useAuth();
@@ -97,8 +98,7 @@ export default function DriverPage() {
   }
 
   const handleStartTracking = useCallback(async () => {
-    const target = deliveryToStart ?? currentDelivery;
-    if (!truck || !target) return;
+    if (!truck || !deliveryToStart) return;
     setGpsError("");
 
     try {
@@ -106,7 +106,7 @@ export default function DriverPage() {
         status: "on_delivery",
         updatedAt: serverTimestamp(),
       });
-      await updateDoc(doc(getClientDb(), "deliveries", target.id), {
+      await updateDoc(doc(getClientDb(), "deliveries", deliveryToStart.id), {
         status: "en_route",
         updatedAt: serverTimestamp(),
       });
@@ -119,9 +119,22 @@ export default function DriverPage() {
         err instanceof Error ? err.message : "Failed to start GPS tracking"
       );
     }
-  }, [truck, deliveryToStart, currentDelivery]);
+  }, [truck, deliveryToStart]);
 
-  const handleStopTracking = useCallback(() => {
+  const handleResumeTracking = useCallback(() => {
+    if (!truck || !currentDelivery) return;
+    setGpsError("");
+    try {
+      startTracking(truck.id);
+      setTracking(true);
+    } catch (err) {
+      setGpsError(
+        err instanceof Error ? err.message : "Failed to resume GPS tracking"
+      );
+    }
+  }, [truck, currentDelivery]);
+
+  const handlePauseTracking = useCallback(() => {
     stopTracking();
     setTracking(false);
   }, []);
@@ -278,30 +291,59 @@ export default function DriverPage() {
 
         {/* Action buttons */}
         <div className="w-full max-w-sm space-y-3">
-          {!tracking ? (
+          {(currentDelivery ?? deliveryToStart) && (
+            <button
+              type="button"
+              onClick={() =>
+                openMapsWithDestination(
+                  (currentDelivery ?? deliveryToStart)!.deliveryAddress
+                )
+              }
+              className="w-full py-3 border-2 border-gray-300 text-gray-600 font-medium rounded-2xl hover:bg-gray-100 transition flex items-center justify-center gap-2"
+            >
+              Open in Google Maps
+            </button>
+          )}
+          {currentDelivery ? (
+            tracking ? (
+              <>
+                <button
+                  onClick={handleMarkDelivered}
+                  className="w-full py-5 bg-green-600 text-white text-xl font-bold rounded-2xl hover:bg-green-700 active:bg-green-800 transition shadow-lg"
+                >
+                  Mark Delivered
+                </button>
+                <button
+                  onClick={handlePauseTracking}
+                  className="w-full py-3 border-2 border-gray-300 text-gray-600 font-medium rounded-2xl hover:bg-gray-100 transition"
+                >
+                  Pause Tracking
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={handleResumeTracking}
+                  className="w-full py-5 bg-blue-600 text-white text-xl font-bold rounded-2xl hover:bg-blue-700 active:bg-blue-800 transition shadow-lg"
+                >
+                  Resume Tracking
+                </button>
+                <button
+                  onClick={handleMarkDelivered}
+                  className="w-full py-3 border-2 border-gray-300 text-gray-600 font-medium rounded-2xl hover:bg-gray-100 transition"
+                >
+                  Mark Delivered
+                </button>
+              </>
+            )
+          ) : deliveryToStart ? (
             <button
               onClick={handleStartTracking}
-              disabled={!deliveryToStart}
               className="w-full py-5 bg-blue-600 text-white text-xl font-bold rounded-2xl hover:bg-blue-700 active:bg-blue-800 transition disabled:opacity-30 disabled:cursor-not-allowed shadow-lg"
             >
               Start Tracking
             </button>
-          ) : (
-            <>
-              <button
-                onClick={handleMarkDelivered}
-                className="w-full py-5 bg-green-600 text-white text-xl font-bold rounded-2xl hover:bg-green-700 active:bg-green-800 transition shadow-lg"
-              >
-                Mark Delivered
-              </button>
-              <button
-                onClick={handleStopTracking}
-                className="w-full py-3 border-2 border-gray-300 text-gray-600 font-medium rounded-2xl hover:bg-gray-100 transition"
-              >
-                Stop Tracking
-              </button>
-            </>
-          )}
+          ) : null}
         </div>
       </main>
     </div>

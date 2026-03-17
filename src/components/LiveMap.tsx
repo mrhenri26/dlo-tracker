@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
+import { useMap } from "react-leaflet";
 
 // Leaflet must be imported dynamically in Next.js (requires window)
 const MapContainer = dynamic(
@@ -20,6 +21,10 @@ const Popup = dynamic(
   () => import("react-leaflet").then((mod) => mod.Popup),
   { ssr: false }
 );
+const Polyline = dynamic(
+  () => import("react-leaflet").then((mod) => mod.Polyline),
+  { ssr: false }
+);
 
 interface MapMarker {
   id: string;
@@ -28,7 +33,7 @@ interface MapMarker {
   label: string;
   status: string;
   updatedAt?: string;
-  type?: "truck" | "delivery";
+  type?: "truck" | "delivery" | "vehicle";
   address?: string;
 }
 
@@ -37,6 +42,10 @@ interface LiveMapProps {
   center?: [number, number];
   zoom?: number;
   className?: string;
+  /** When length >= 2, fit map bounds to show all points with padding */
+  fitBoundsPoints?: [number, number][];
+  /** Line from first to last point (e.g. truck to destination) */
+  routeLine?: [number, number][];
 }
 
 function formatTime(dateStr?: string): string {
@@ -45,17 +54,41 @@ function formatTime(dateStr?: string): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+/** Top-down car SVG for vehicle marker */
+const CAR_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28"><path fill="%232563eb" stroke="%231e40af" stroke-width="1.2" d="M5 14l1.5-4.5h11L19 14H5zm2 2a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm10 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM6.5 8L8 4h8l1.5 4H6.5z"/></svg>';
+
+function FitBounds({
+  points,
+}: {
+  points: [number, number][];
+}) {
+  const map = useMap();
+  useEffect(() => {
+    if (points.length >= 2) {
+      import("leaflet").then((L) => {
+        const bounds = L.latLngBounds(points.map((p) => [p[0], p[1]] as [number, number]));
+        map.fitBounds(bounds, { padding: [24, 24] });
+      });
+    }
+  }, [map, points]);
+  return null;
+}
+
 export default function LiveMap({
   markers,
   center = [18.54, -72.34], // Port-au-Prince, Haiti
   zoom = 12,
   className = "h-[400px] w-full rounded-xl",
+  fitBoundsPoints,
+  routeLine,
 }: LiveMapProps) {
   const [mounted, setMounted] = useState(false);
   const [leafletIcon, setLeafletIcon] = useState<{
     idle: L.Icon;
     on_delivery: L.Icon;
     delivery: L.Icon;
+    vehicle: L.DivIcon;
   } | null>(null);
 
   useEffect(() => {
@@ -92,7 +125,14 @@ export default function LiveMap({
         popupAnchor: [1, -34],
         shadowSize: [41, 41],
       });
-      setLeafletIcon({ idle, on_delivery, delivery });
+      const vehicle = new L.DivIcon({
+        html: `<div class="flex items-center justify-center drop-shadow-md">${CAR_SVG}</div>`,
+        className: "border-0 bg-transparent",
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+        popupAnchor: [0, -14],
+      });
+      setLeafletIcon({ idle, on_delivery, delivery, vehicle });
     });
   }, []);
 
@@ -117,17 +157,33 @@ export default function LiveMap({
         attribution='&copy; <a href="https://www.openstreetmap.org/">OSM</a>'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
+      {fitBoundsPoints && fitBoundsPoints.length >= 2 && (
+        <FitBounds points={fitBoundsPoints} />
+      )}
+      {routeLine && routeLine.length >= 2 && (
+        <Polyline
+          positions={routeLine.map((p) => [p[0], p[1]] as [number, number])}
+          pathOptions={{
+            color: "#2563eb",
+            weight: 4,
+            opacity: 0.8,
+            dashArray: "8, 8",
+          }}
+        />
+      )}
       {markers.map((m) => (
         <Marker
           key={m.id}
           position={[m.lat, m.lng]}
           icon={
             leafletIcon
-              ? m.type === "delivery"
-                ? leafletIcon.delivery
-                : m.status === "on_delivery"
-                  ? leafletIcon.on_delivery
-                  : leafletIcon.idle
+              ? m.type === "vehicle"
+                ? leafletIcon.vehicle
+                : m.type === "delivery"
+                  ? leafletIcon.delivery
+                  : m.status === "on_delivery"
+                    ? leafletIcon.on_delivery
+                    : leafletIcon.idle
               : undefined
           }
         >

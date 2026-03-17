@@ -2,15 +2,17 @@
 
 import { useState, FormEvent, useEffect, useRef } from "react";
 import { getClientAuth } from "@/lib/firebase";
-import { Truck } from "@/types";
+import { Truck, AppUser } from "@/types";
 
 interface DeliveryFormProps {
   trucks: Truck[];
+  drivers: AppUser[];
   onClose: () => void;
 }
 
-export default function DeliveryForm({ trucks, onClose }: DeliveryFormProps) {
+export default function DeliveryForm({ trucks, drivers, onClose }: DeliveryFormProps) {
   const [truckId, setTruckId] = useState("");
+  const [driverId, setDriverId] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [deliveryLocation, setDeliveryLocation] = useState<{
@@ -115,6 +117,12 @@ export default function DeliveryForm({ trucks, onClose }: DeliveryFormProps) {
         setSubmitting(false);
         return;
       }
+      const driver = drivers.find((d) => d.uid === driverId);
+      if (!driver) {
+        setError("Please select a driver.");
+        setSubmitting(false);
+        return;
+      }
 
       const user = getClientAuth().currentUser;
       if (!user) {
@@ -132,7 +140,7 @@ export default function DeliveryForm({ trucks, onClose }: DeliveryFormProps) {
         },
         body: JSON.stringify({
           truckId: truck.id,
-          driverId: truck.driverId,
+          driverId: driver.uid,
           customerName,
           deliveryAddress,
           location: deliveryLocation
@@ -190,13 +198,46 @@ export default function DeliveryForm({ trucks, onClose }: DeliveryFormProps) {
             <select
               required
               value={truckId}
-              onChange={(e) => setTruckId(e.target.value)}
+              onChange={(e) => {
+                const id = e.target.value;
+                setTruckId(id);
+                const truck = trucks.find((t) => t.id === id);
+                if (truck?.driverId && drivers.some((d) => d.uid === truck.driverId)) {
+                  setDriverId(truck.driverId);
+                }
+              }}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-gray-900"
             >
               <option value="">Select a truck...</option>
               {trucks.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name} ({t.plateNumber})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Driver
+            </label>
+            <select
+              required
+              value={driverId}
+              onChange={(e) => {
+                const id = e.target.value;
+                setDriverId(id);
+                const driver = drivers.find((d) => d.uid === id);
+                if (driver?.truckId && trucks.some((t) => t.id === driver.truckId)) {
+                  setTruckId(driver.truckId);
+                }
+              }}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-gray-900"
+            >
+              <option value="">Select a driver...</option>
+              {drivers.map((d) => (
+                <option key={d.uid} value={d.uid}>
+                  {d.name || d.email}
                 </option>
               ))}
             </select>
